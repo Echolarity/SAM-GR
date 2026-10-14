@@ -1,5 +1,6 @@
 import argparse
 import copy
+import glob
 import json
 import os
 import random
@@ -22,20 +23,20 @@ def parse_args():
     p = argparse.ArgumentParser(description="Rec zoo: sequential recommendation (SASRec, GRU, Caser)")
     p.add_argument("--data_dir", type=str, default="data/Industrial_and_Scientific")
     p.add_argument("--split", type=str, default="sft", choices=["rl", "sft"])
-    p.add_argument("--seq_size", type=int, default=10)
-    p.add_argument("--epoch", type=int, default=500)
-    p.add_argument("--batch_size", type=int, default=1024)
-    p.add_argument("--hidden_factor", type=int, default=32)
+    p.add_argument("--seq_size", type=int, default=50)
+    p.add_argument("--epoch", type=int, default=1000)
+    p.add_argument("--batch_size", type=int, default=128)
+    p.add_argument("--hidden_factor", type=int, default=128)
     p.add_argument("--lr", type=float, default=0.001)
-    p.add_argument("--l2_decay", type=float, default=1e-5)
-    p.add_argument("--dropout_rate", type=float, default=0.3)
-    p.add_argument("--loss_type", type=str, default="bce", choices=["bce", "ce"])
+    p.add_argument("--l2_decay", type=float, default=1e-4)
+    p.add_argument("--dropout_rate", type=float, default=0.5)
+    p.add_argument("--loss_type", type=str, default="ce", choices=["bce", "ce"])
     p.add_argument("--model", type=str, default="SASRec", choices=["SASRec", "GRU", "Caser"])
     p.add_argument("--num_filters", type=int, default=16)
     p.add_argument("--filter_sizes", type=str, default="[2,3,4]")
-    p.add_argument("--early_stop", type=int, default=20)
+    p.add_argument("--early_stop", type=int, default=50)
     p.add_argument("--eval_num", type=int, default=1)
-    p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cuda", type=int, default=0)
     p.add_argument("--save_dir", type=str, default="")
     p.add_argument("--result_json", type=str, default=None)
@@ -128,6 +129,62 @@ def evaluate_with_predictions(model, samples, device, topk, pad_id, id2sid, top_
     return hr_list, ndcg_list, final_result_list
 
 
+def load_traditional_data(data_dir, seq_size):
+    """Load dense ``*.train/valid/test.inter`` files (bypass SID/LLM text loading).
+
+    Returns ``(train, valid, test, item_num, id2sid)`` where each sample is a
+    ``(seq, next_id)`` tuple with ``seq`` left-padded to ``seq_size``.
+    ``id2sid`` is empty (traditional data has no semantic IDs yet).
+    """
+
+    def read_inter(path):
+        rows = []
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        for line in lines[1:]:
+            parts = line.strip().split("\t")
+            if len(parts) != 3:
+                continue
+            hist = [int(x) for x in parts[1].split()] if parts[1].strip() else []
+            target = int(parts[2])
+            rows.append((hist, target))
+        return rows
+
+    train_files = sorted(glob.glob(os.path.join(data_dir, "*.train.inter")))
+    valid_files = sorted(glob.glob(os.path.join(data_dir, "*.valid.inter")))
+    test_files = sorted(glob.glob(os.path.join(data_dir, "*.test.inter")))
+
+    train_rows = read_inter(train_files[0]) if train_files else []
+    valid_rows = read_inter(valid_files[0]) if valid_files else []
+    test_rows = read_inter(test_files[0]) if test_files else []
+
+    all_ids = set()
+    for rows in (train_rows, valid_rows, test_rows):
+        for hist, target in rows:
+            all_ids.update(hist)
+            all_ids.add(target)
+    item_num = max(all_ids) + 1 if all_ids else 0
+    pad = item_num
+
+    def to_samples(rows):
+        samples = []
+        for hist, target in rows:
+            if len(hist) > seq_size:
+                hist = hist[-seq_size:]
+            else:
+                hist = hist + [pad] * (seq_size - len(hist))
+            samples.append((hist, target))
+        return samples
+
+    return (
+        to_samples(train_rows),
+        to_samples(valid_rows),
+        to_samples(test_rows),
+        item_num,
+        {},
+    )
+
+
 def main():
     args = parse_args()
     if not args.save_dir:
@@ -139,9 +196,14 @@ def main():
     if args.result_json is None:
         args.result_json = os.path.join(args.save_dir, "result.json")
 
-    train_samples, valid_samples, test_samples, item_num, id2sid = load_industrial_scientific(
-        args.data_dir, seq_size=args.seq_size, split=args.split
-    )
+    if os.path.exists(os.path.join(args.data_dir, "id2sid.json")):
+        train_samples, valid_samples, test_samples, item_num, id2sid = load_industrial_scientific(
+            args.data_dir, seq_size=args.seq_size, split=args.split
+        )
+    else:
+        train_samples, valid_samples, test_samples, item_num, id2sid = load_traditional_data(
+            args.data_dir, args.seq_size
+        )
     seq_size = args.seq_size
     pad_id = item_num
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -290,6 +352,12 @@ def main():
         json.dump(final_result_list, f, indent=4, ensure_ascii=False)
     ckpt_path = os.path.join(args.save_dir, "best_state.pth")
     torch.save(best_model.state_dict(), ckpt_path)
+    # 导出物品嵌入 (供 multimodal 阶段作为 collab 特征使用)
+    if hasattr(best_model, "item_embeddings"):
+        item_emb = best_model.item_embeddings.weight.data[:item_num].detach().cpu().numpy()
+        emb_path = os.path.join(args.save_dir, "sasrec_item_emb.npy")
+        np.save(emb_path, item_emb)
+        print(f"Saved item embeddings ({item_emb.shape}) -> {emb_path}")
     meta_path = os.path.join(args.save_dir, "best_ckpt_meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(

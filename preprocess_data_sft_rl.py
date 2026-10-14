@@ -28,14 +28,19 @@ def load_items_with_desc(item_json_path: str) -> dict[str, dict]:
         return json.load(f)
 
 
-def load_index(index_path: str) -> dict[str, str]:
+def load_index(index_path: str, sid_num: int = 3) -> dict[str, str]:
     """Load index.json, return item_id -> combined_sid mapping (e.g. <a_20><b_188><c_134>)."""
     with open(index_path, encoding="utf-8") as f:
         indices = json.load(f)
     id2sid = {}
     for item_id, sids in indices.items():
-        if len(sids) >= 3:
-            id2sid[str(item_id)] = sids[0] + sids[1] + sids[2]
+        if len(sids) >= sid_num:
+            id2sid[str(item_id)] = "".join(sids[:sid_num])
+    if not id2sid:
+        raise ValueError(
+            f"load_index 得到空映射: index.json 中每个物品的 SID 层数 < sid_num={sid_num}. "
+            f"请确认 RQ-VAE 的 num_emb_list 长度与 sid_num 一致 (4↔4), 并检查 index.json 内容."
+        )
     return id2sid
 
 
@@ -56,18 +61,18 @@ def extract_new_tokens(index_path: str) -> list[str]:
     return sorted(tokens)
 
 
-def build_sid_trie(indices: dict[str, list[str]]) -> dict:
-    """Build trie from index.json item_id -> [sid1, sid2, sid3].
+def build_sid_trie(indices: dict[str, list[str]], sid_num: int = 4) -> dict:
+    """Build trie from index.json item_id -> [sid1, sid2, sid3, ...].
 
     Each path is a token sequence, leaf nodes store item_id list (supports multiple items per semantic ID).
     Returns JSON-serializable nested dict.
     """
     trie: dict = {}
     for item_id, sids in indices.items():
-        if len(sids) < 3:
+        if len(sids) < sid_num:
             continue
         node = trie
-        for i, token in enumerate(sids[:3]):  # use first 3 levels only
+        for token in sids[:sid_num]:  # use first sid_num levels only
             if token not in node:
                 node[token] = {}
             node = node[token]
@@ -388,6 +393,7 @@ def main(
     seq_sample: int = 10000,
     seed: int = 42,
     data_source: str = "",
+    sid_num: int = 3,
 ):
     """Build LlamaFactory dataset (with semantic ID) from data_dir/category (e.g. Amazon18/Industrial_and_Scientific)."""
     if not data_source:
@@ -414,7 +420,7 @@ def main(
     id2title = load_items(item_path)
     id2title_full = load_items_full(item_path)  # with fallback, for task4 title2sid
     items_with_desc = load_items_with_desc(item_path)  # with title+description, for task5
-    id2sid = load_index(index_path)
+    id2sid = load_index(index_path, sid_num=sid_num)
     index_raw = load_index_raw(index_path)  # item_id -> ["<a_*>", "<b_*>", "<c_*>"]
     print(f"Loaded {len(id2title)} items, {len(id2sid)} semantic ID mappings")
 

@@ -26,12 +26,22 @@ except ImportError:
 
 
 def set_seed(seed: int):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+    try:
+        import transformers
+
+        transformers.set_seed(seed)
+    except Exception:
+        pass
 
 
 def get_assistant_prefix_from_tokenizer(tokenizer: AutoTokenizer) -> str:
@@ -66,7 +76,7 @@ def build_trie_from_index(
 
     eos_id = tokenizer.eos_token_id
     sequences = []
-    for item_str in item_strs:
+    for item_str in sorted(list(item_strs)):
         full_ids = tokenizer(prefix + item_str, add_special_tokens=False).input_ids
         item_ids = full_ids[len(prefix_ids) :]
         sequences.append(prefix_ids + item_ids + [eos_id])
@@ -192,7 +202,7 @@ def main(
     batch_size: int = 4,
     max_new_tokens: int = 64,
     temperature: float = 1.0,
-    do_sample: bool = True,
+    do_sample: bool = False,
     num_beams: int = 50,
     length_penalty: float = 0.0,
     repetition_penalty: float = 1.1,
