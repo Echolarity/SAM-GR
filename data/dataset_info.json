@@ -70,5 +70,23 @@
       "response": "output",
       "system": "system"
     }
+  },
+  "Sports_and_Outdoors_train": {
+    "file_name": "Sports_and_Outdoors/sft/train.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  },
+  "Sports_and_Outdoors_valid": {
+    "file_name": "Sports_and_Outdoors/sft/valid.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
   }
 }

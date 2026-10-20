@@ -269,7 +269,9 @@ async def main():
     log(f"完成: ok={stats['ok']} exists={stats['exists']} fail={stats['fail']} "
         f"总耗时 {(time.time()-t0)/60:.1f} min")
     if failed_entries:
-        fail_path = os.path.join(HERE, "Books_images_failed2.jsonl")
+        fail_path = args.failed_list.replace("_images_todo.jsonl", "_images_failed.jsonl")
+        if fail_path == args.failed_list:
+            fail_path = os.path.join(HERE, "images_failed.jsonl")
         with open(fail_path, "w", encoding="utf-8") as f:
             for e in failed_entries:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
