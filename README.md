@@ -1,385 +1,240 @@
-
 <p align="center">
   <img src="assets/MIMIGenRec_logo.png" alt="MIMIGenRec logo"/>
 </p>
 
-<p align="center"><strong>A Flexible Framework for Generative Recommendation</strong></p>
+<p align="center"><strong>SAM-GR: Multimodal Generative Recommendation with Collaborative-Semantic Aggregation and Mixture-of-Experts Fusion</strong></p>
 
-<p align="center">
-  <a href="https://wandb.ai/cocoshe/MIMIGenRec-public/workspace?nw=nwusercocoshe">
-    <img src="./assets/wandb-github-badge-gradient.svg" alt="Visualize in Weights & Biases" width="120" /></a><a href="https://huggingface.co/collections/cocoshe/mimigenrec">
-    <img src="./assets/model-on-hf-md-dark.svg" alt="Model in Hugging Face" width="94" />
-  </a>
-</p>
-
-
-**MIMIGenRec** (Modular, Integrated, Mutable, Interchangeable GenRec) is a flexible training framework for **generative recommendation** models.
-
-**<img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Rocket.png" alt="Rocket" width="25" height="25" />Updates**
-
-2026-04-09 — Release evaluation results on datasets.
-
-2026-03-06 — Release wandb logs to ensure reproducibility. Migrating rq code and embedding code from MiniOneRec, give more example datasets and scripts, now it support to preprocess and build the datasets in this single repository. Support traditional models to reproduce(GRU4Rec, Caser, SASRec), metrics are well saved as
-
-2026-02-18 — MIMIGenRec code released, including SFT and RL training on handcrafted datasets.
-
-**<img src="https://raw.githubusercontent.com/Tarikul-Islam-Anik/Animated-Fluent-Emojis/master/Emojis/Travel%20and%20places/Glowing%20Star.png" alt="Glowing Star" width="25" height="25" />Highlights**
-
-- **LlamaFactory integration**: SFT and LoRA for a wide range of custom models via simple YAML configs; support for backends such as [Unsloth](https://github.com/unslothai/unsloth); built-in experiment monitors (e.g. WandB) for logging and comparison.
-- **TRL integration**: Tight integration with [TRL](https://github.com/huggingface/trl) and the Hugging Face ecosystem; multi-GPU and multi-node training with [Accelerate](https://github.com/huggingface/accelerate), flexible [DeepSpeed](https://github.com/microsoft/DeepSpeed) configs (ZeRO-2/3, etc.), and easy to design custom rewards (e.g. NDCG, HR) for policy optimization.
-- **Flexible Trie design**: Constrained decoding over SIDs via a Trie, which is flexible to build constrained logits processor for beam search when rollout.
-
-## Evaluation results
-
-<img width="2402" height="420" alt="image" src="https://github.com/user-attachments/assets/ddc8bcd1-5ae3-429c-9ddf-f3c8833bfc26" />
-
-<img width="2368" height="406" alt="image" src="https://github.com/user-attachments/assets/980bfcd8-b59b-44e7-96d3-e7d1600431b9" />
-
-<img width="2376" height="504" alt="image" src="https://github.com/user-attachments/assets/fe8ba90a-5300-4ae3-b766-580e31f5d95f" />
-
-
-
-## Overview
-
-| Stage | Framework | Description |
-|-------|-----------|-------------|
-| **SFT** | LlamaFactory | `llamafactory-cli train` with YAML configs; supports 0.5B / 1.5B / 3B and multiple data sizes |
-| **RL** | TRL  | Custom `MIMIGenRec` model wrapper + `GRPOTrainer`; ranking rewards (e.g. NDCG) for policy optimization |
-
-## Quick Start
-
-### 1. Environment & Dependencies
-
-**Install the current library**:
-
-```bash
-pip install -e .
-```
-
-This installs LlamaFactory in editable mode with all dependencies (PyTorch, transformers, TRL, accelerate, etc. per `pyproject.toml`). The `llamafactory-cli` (and `lmf`) commands will be available after install.
-
-- Optional: set `HF_ENDPOINT` (e.g. `https://hf-mirror.com`) if you use a mirror.
-- Optional: set `WANDB_API_KEY` and `WANDB_PROJECT` for experiment logging.
-
->**Tested with packages**. If the pipeline fails due to version incompatibilities, please align your environment with the versions below:
-
-| Package      | Version   |
-|-------------|-----------|
-| Python      | 3.12.12   |
-| torch       | 2.8.0+cu128 |
-| transformers| 4.57.1    |
-| trl         | 0.24.0    |
-| accelerate  | 1.11.0    |
-| peft        | 0.17.1    |
-| datasets    | 4.0.0     |
-
-To print your current environment versions (run inside your env):
-
-```bash
-python -c "
-import sys
-for p in ['torch', 'transformers', 'trl', 'accelerate', 'peft', 'datasets']:
-    try:
-        m = __import__(p); print(p, getattr(m, '__version__', '?'))
-    except Exception as e: print(p, 'not installed')
-print('python', sys.version.split()[0])
-"
-```
-
-### 2. Data Preparation
-
-> If you want to test on prepared dataset, you can skip to `5. SFT training` section.
-
-#### 2.1 Download Amazon data (example: `Industrial_and_Scientific`)
-
-```bash
-cd ./data
-wget https://mcauleylab.ucsd.edu/public_datasets/data/amazon_v2/categoryFilesSmall/Industrial_and_Scientific_5.json.gz
-gunzip Industrial_and_Scientific_5.json.gz
-wget https://mcauleylab.ucsd.edu/public_datasets/data/amazon_v2/metaFiles2/meta_Industrial_and_Scientific.json.gz
-gunzip meta_Industrial_and_Scientific.json.gz
-```
-
-#### 2.2 Filter and preprocess
-```
-bash amazon18_data_process.sh
-```
-
-Then we got:
-
-- `Industrial_and_Scientific.item2id`
-- `Industrial_and_Scientific.user2id`
-- `Industrial_and_Scientific.review.json`
-- `Industrial_and_Scientific.item.json`
-- `Industrial_and_Scientific.inter.json`
-- `Industrial_and_Scientific.test.inter`
-- `Industrial_and_Scientific.valid.inter`
-- `Industrial_and_Scientific.train.inter`
-
-#### 2.3 Encode item text to embeddings
-
-Please follow "Encode item text to embeddings" in [MiniOneRec](https://github.com/AkaliKong/MiniOneRec#2-data-preparation):
-
-```
-bash rq/text2emb/amazon_text2emb.sh
-```
-
-Then we got:
-
-- `Industrial_and_Scientific.emb-qwen-td.npy`
-
-### 3. SID Construction
-
-Please follow 3.1, 3.2 of "SID Construction" in [MiniOneRec](https://github.com/AkaliKong/MiniOneRec#3-sid-construction)
-to generate indices.
-
-
-```
-bash rq/rqvae.sh
-```
-
-```
-bash rq/generate_indices.sh
-```
-
-Then we got:
-
-- `Industrial_and_Scientific.index.json`
-
-### 4. Preprocess for SFT + RL
-
-By default the category is `Industrial_and_Scientific` with raw data under `data/Amazon18`. Run:
-
-```bash
-bash preprocess_data_sft_rl.sh
-```
-
-This runs `preprocess_data_sft_rl.py` and writes SFT/RL data and `new_tokens.json` to `data/Industrial_and_Scientific/`. You can change `DATA_DIR`, `CATEGORY`, `OUTPUT_DIR`, `TASK4_SAMPLE`, and `SEED` in the script.
-
-Then we got:
-
-```
-data/Industrial_and_Scientific/
-├── new_tokens.json      # SID vocabulary for LlamaFactory add_tokens_list
-├── id2sid.json          # item_id -> [sid1, sid2, sid3] (same format as source index)
-├── sft/
-│   ├── train.json
-│   ├── valid.json
-│   └── test.json
-└── rl/
-    ├── train.json
-    ├── valid.json
-    └── test.json
-```
-
-
-### 5. SFT training
-
-```bash
-bash sft.sh
-```
-
-- Default: 8 GPUs (`CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7`), 0.5B config.
-- Edit `sft.sh` to change GPUs, WANDB project, and comment/uncomment the relevant `llamafactory-cli train` lines to switch 0.5B / 1.5B / 3B and dsz (e.g. dsz0 / dsz2 / dsz3).
-
-### 6. RL training
-
-After SFT and once you have a checkpoint, run RL with TRL:
-
-```bash
-bash trl_trainer.sh
-```
-
-- In `trl_trainer.sh` set:
-  - `MODEL_PATH`: path to the SFT checkpoint (e.g. `saves/qwen2.5-0.5b/full/industry-sft-dsz0`)
-  - `DATA_DIR`: RL data directory (e.g. `data/amazon_industry/rl`)
-  - `INDEX_PATH`: category index file (e.g. `data/amazon_industry/Industrial_and_Scientific.index.json`)
-  - `OUTPUT_DIR`: RL output directory
-- The script launches `trl_trainer.py` via `accelerate` + DeepSpeed, using `MIMIGenRec` and `GRPOTrainer` with rewards from `rewards/ranking_reward` (e.g. NDCG rule reward).
-
-### 7. Evaluate
-
-Set your trained model in `evaluate.sh`.
-
-`exp_name`: Your model path
-`test_data_path`: test json path
-`output_dir`: path to save results
-
-
-```bash
-bash evaluate.sh
-```
-
+<p align="center"><strong>Built on <a href="https://github.com/cocoshe/MIMIGenRec">MIMIGenRec</a></strong></p>
 
 ---
 
-## SFT/RL with Custom Dataset
+## About this repository
 
-### 1. Prepare with Custom Dataset
+This repository **inherits [MIMIGenRec](https://github.com/cocoshe/MIMIGenRec)** (Modular, Integrated, Mutable, Interchangeable GenRec), a flexible training framework for **generative recommendation**, and extends it with new multimodal item-representation learning and end-to-end data pipelines. All credits for the base framework go to the MIMIGenRec authors.
 
-You must **first convert items to SIDs** (e.g. via [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) SID construction), then prepare **`new_tokens.json`**, **`id2sid.json`** and the **SFT / RL datasets**. The layout and formats are described below.
+### Inherited from MIMIGenRec
 
+- **SFT stage**: [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory)-based supervised fine-tuning via YAML configs (0.5B / 1.5B / 3B, LoRA / full, DeepSpeed ZeRO).
+- **RL stage**: [TRL](https://github.com/huggingface/trl) `GRPOTrainer` with custom ranking rewards (NDCG / HR) and constrained beam-search rollout over SIDs via a **flexible Trie**.
+- **SID construction**: [RQ-VAE](https://github.com/AkaliKong/MiniOneRec) semantic IDs, `new_tokens.json` / `id2sid.json` formats, SFT/RL dataset schemas and registries.
 
-**Example directory structure:**
+### What is new in this repository
+
+- **Multimodal item embeddings**: item representations produced by **Qwen3-VL** from both product text and product images, replacing the text-only embeddings of the original pipeline.
+- **Collaborative-semantic alignment (CSGA)**: *Collaborative Similarity Graph Aggregation* — collaborative signals (SASRec item embeddings) define an implicit item-item Top-K graph; each item aggregates the multimodal semantic features of its collaborative neighbors with learned attention weights, trained to reconstruct its own semantic feature (graph-guided denoising).
+- **Mixture-of-Experts fusion**:
+  - **OMoE** — orthogonal Mixture-of-Experts with modality-specific + shared experts, orthogonality regularization and load balancing.
+  - **OMoE v2** — discriminability-aware variant (2 shared experts, near-duplicate repulsion and variance-matching losses) that avoids rank collapse.
+  - **CSGA→OMoE pipelines** — CSGA alignment followed by OMoE / OMoE-v2 fusion of text, image and collaboratively-aligned features.
+- **14 fusion modes** in a single script (`rq/text2emb/multimodal_amazon_text2emb.py`): `multimodal`, `text_only`, `image_only`, `concat`, `image2text`, `image2text_supp`, `moe_decouple`, `contrastive_adapter`, and the collaborative variants `multimodal_collab`, `concat_collab`, `moe_collab`, `csga_collab`, `csga_moe_collab`, `csga_moe_collab_v2`.
+- **4-layer RQ-VAE** SIDs (4 semantic tokens per item) with controllable low-frequency item merging (`SID_MERGE_RATIO`).
+- **One-click pipeline** (`main.sh`): 7 stages from raw data to SFT + evaluation, with stage-level resume (`START_STAGE`), multi-GPU support and background execution via `nohup_run.sh`.
+- **More datasets**: `Industrial_and_Scientific`, `Sports_and_Outdoors`, `Toys_and_Games`, and `Books` (including download / filtering / image-download tooling).
+- **Updated baselines**: GRU4Rec, Caser and SASRec with collaborative embedding export for the `*_collab` fusion modes.
+
+## Pipeline overview
 
 ```
-data/Industrial_and_Scientific/
-├── new_tokens.json      # SID vocabulary
-├── id2sid.json          # item_id -> [sid1, sid2, sid3]
-├── sft/
-│   ├── train.json       # SFT training set
-│   ├── valid.json       # SFT validation set
-│   └── test.json        # SFT test set
-└── rl/
-    ├── train.json       # RL training set
-    ├── valid.json       # RL validation set
-    └── test.json        # RL test set
+raw reviews + meta + images (data/)
+        │
+  ① possess_data ──────────────► item.json + *.inter + image list
+        │
+  ② SASRec (collab modes only) ► sasrec_item_emb.npy
+        │
+  ③ multimodal text2emb (Qwen3-VL + optional CSGA/OMoE fusion)
+        │                        ► {category}.emb-{model}-{mode}.npy
+  ④ RQ-VAE (4-layer codebook)  ► best_collision_model.pth
+        │
+  ⑤ generate_indices           ► {category}.index.json
+        │
+  ⑥ preprocess (sid_num=4)     ► sft/ + rl/ + new_tokens.json
+        │
+  ⑦ SFT (LlamaFactory) + evaluate
 ```
 
-#### 1.1 `new_tokens.json`
-
-- **Format**: A JSON array of strings. Each string is a **semantic ID (SID) token** (e.g. `"<a_100>"`, `"<b_230>"`, `"<c_0>"`).
-
-Example:
-```json
-[
-  "<a_100>",
-  "<a_102>",
-  "<a_105>",
-  "<a_106>",
-  "<a_108>",
-  "<a_109>",
-  "<a_111>",
-  "<a_115>",
-  "<a_116>",
-  "<a_118>",
-  "<a_11>",
-  ......
-]
-```
-
-#### 1.2 `id2sid.json`
-
-This is used to build Trie for constrained beam search. Each candidate (item) is represented by SID: the value is the concatenation of the three tokens in the array (e.g. `<a_102><b_178><c_228>`).
-
-Example:
-```json
-{
-    "3681": [
-        "<a_102>",
-        "<b_178>",
-        "<c_228>"
-    ],
-    "3682": [
-        "<a_135>",
-        "<b_237>",
-        "<c_165>"
-    ]
-}
-```
-
-#### 1.3 SFT data (`sft/train.json`, `valid.json`, `test.json`)
-
-Example:
-
-```json
-{
-    "system": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.",
-    "instruction": "Can you predict the next possible item that the user may expect?",
-    "input": "The user has interacted with items <a_14><b_221><c_27>, <a_58><b_86><c_2>, <a_221><b_23><c_236>, <a_102><b_164><c_35> in chronological order. Can you predict the next possible item that the user may expect?",
-    "output": "<a_58><b_138><c_72>"
-}
-```
-
-
-#### 1.4 RL data (`rl/train.json`, `valid.json`, `test.json`)
-
-Example:
-
-```json
-{
-    "data_source": "Industrial_and_Scientific",
-    "prompt": [
-      {
-        "role": "system",
-        "content": "Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request."
-      },
-      {
-        "role": "user",
-        "content": "Can you predict the next possible item the user may expect, given the following chronological interaction history: <a_46><b_127><c_11>, <a_109><b_82><c_159>, <a_215><b_255><c_82>, <a_74><b_21><c_124>, <a_128><b_195><c_181>, <a_42><b_119><c_86>, <a_61><b_31><c_174>, <a_61><b_21><c_4>, <a_87><b_177><c_42>, <a_100><b_108><c_21>"
-      }
-    ],
-    "ability": "seq_rec",
-    "reward_model": {
-      "style": "rule",
-      "ground_truth": "<a_206><b_91><c_113>"
-    },
-    "extra_info": {
-      "split": "test",
-      "index": 3643,
-      "task": "task1_sid_sft"
-    }
-}
-```
-
-### 2. SFT data Registry
-
-You must register your SFT dataset in **`data/dataset_info.json`**, pointing `file_name` to the JSON under `data/` (e.g. `Industrial_and_Scientific/sft/train.json`) and mapping columns as below:
-
-```json
-  "Industrial_and_Scientific_train": {
-    "file_name": "Industrial_and_Scientific/sft/train.json",
-    "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output",
-      "system": "system"
-    }
-  },
-  "Industrial_and_Scientific_valid": {
-    "file_name": "Industrial_and_Scientific/sft/valid.json",
-    "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output",
-      "system": "system"
-    }
-  }
-```
-
-### 3. Create your SFT yaml config
-
-The SFT config, for example: **`examples/train_full/Industrial_and_Scientific/industry_rec_full_sft_0.5b_dsz0.yaml`**. Use it (or copy and edit) to run SFT with LlamaFactory.
-
-**Ensure `dataset` and `eval_dataset` match the keys you added in `data/dataset_info.json`, and `add_tokens_list` points to your `new_tokens.json`.**
-
-Then run:
+## Environment & installation
 
 ```bash
-llamafactory-cli train PATH_TO_YOUR_YAML.yaml
+git clone git@github.com:Echolarity/SAM-GR.git
+cd SAM-GR
+pip install -e .
 ```
 
-(or use `bash sft.sh` after uncommenting the corresponding line).
+This installs LLaMA-Factory in editable mode with all dependencies (PyTorch, transformers, TRL, accelerate, peft, datasets, etc.). The `llamafactory-cli` command is available after install.
 
-## More experiments (`GRU4Rec`, `Caser`, `SASRec`)
+Optionally:
 
-Run `GRU4Rec`
+- Set `HF_ENDPOINT` (e.g. `https://hf-mirror.com`) if you use a mirror.
+- Set `WANDB_API_KEY` / `WANDB_PROJECT` for experiment logging.
+
+> **Tested versions**. If the pipeline fails due to version incompatibilities, align your environment with:
+
+| Package       | Version     |
+|---------------|-------------|
+| Python        | 3.12        |
+| torch         | 2.8.0+cu128 |
+| transformers  | 4.57.1      |
+| trl           | 0.24.0      |
+| accelerate    | 1.11.0      |
+| peft          | 0.17.1      |
+| datasets      | 4.0.0       |
+
+## Data preparation
+
+### 1. Raw data layout
+
+Put raw Amazon review files (`{Category}.jsonl.gz`), metadata (`meta_{Category}.jsonl.gz`) and product images under `data/`:
+
+```
+data/
+├── {Category}.jsonl.gz          # reviews
+├── meta_{Category}.jsonl.gz     # item metadata
+├── {Category}_images/           # one image per item: {asin}_MAIN.jpg
+└── ...
+```
+
+Helper scripts are provided for common categories:
+
 ```bash
-bash scripts/rec_zoo/train_gru.sh --data_dir data/Industrial_and_Scientific
+# Sports_and_Outdoors + Toys_and_Games: integrity check, 5-core filtering, image list + fast download
+bash nohup_run.sh run cats_images_dl bash download_cats.sh
+
+# Books: subset building, meta/review merging, filtering
+python data/books_process.py --help
+python data/make_books_subset.py --help
 ```
 
-Run `Caser`
+### 2. Multimodal embedding model
+
+Download a VLM checkpoint (default `Qwen3-VL-8B-Instruct`) and point `TEXT2EMB_MODEL` to it:
+
 ```bash
-bash scripts/rec_zoo/train_caser.sh --data_dir data/Industrial_and_Scientific
+export TEXT2EMB_MODEL=/path/to/Qwen3-VL-8B-Instruct
 ```
 
-Run `SASRec`
+## Usage: one-click pipeline
+
+`main.sh` orchestrates the 7 stages above. The most important switches are environment variables:
+
+| Variable         | Default                    | Description |
+|------------------|----------------------------|-------------|
+| `CATEGORY`       | `Industrial_and_Scientific`| Dataset category |
+| `MODAL_CHOICE`   | `text_only`                | Fusion mode (see table below) |
+| `CUDA_VISIBLE`   | `0,1,2,3`                  | GPUs for text2emb / SFT |
+| `MONO_CUDA`      | `0`                        | GPU for RQ-VAE / index generation |
+| `TEXT2EMB_MODEL` | local Qwen3-VL-8B path     | VLM checkpoint for item embeddings |
+| `Optimization`   | `dsz2`                     | DeepSpeed stage used by the SFT YAML (`dsz0/dsz2/dsz3`) |
+| `START_STAGE`    | `1`                        | Resume from stage N (1–7) |
+| `ONLY_TASK1`     | `0`                        | `1` = generate only the task1 (history→SID) ablation data |
+| `SID_MERGE_RATIO`| `0`                        | Merge ratio of low-frequency items into hot collaborative neighbors (collab modes) |
+| `USER_K` / `ITEM_K` | `5` / `5`              | 5-core filtering thresholds |
+| `SAMPLE_SIZE`    | `-1` (all)                 | Limit number of users |
+| `MOE_EPOCHS`     | `30`                       | Fusion training epochs (MoE / CSGA / contrastive modes) |
+| `SASREC_*`       | —                          | SASRec collab-embedding training hyper-parameters |
+
+**Fusion modes** (`MODAL_CHOICE`):
+
+| Mode | Description |
+|------|-------------|
+| `text_only` | Text-only item embeddings (original MIMIGenRec-style) |
+| `image_only` | Image-only embeddings |
+| `multimodal` | Concatenated text+image embeddings from the VLM |
+| `concat` | Concat text/image embeddings |
+| `image2text` / `image2text_supp` | VLM caption of the product image (optionally combined with original text) |
+| `moe_decouple` | MoE decoupled fusion of text/image |
+| `contrastive_adapter` | Contrastive-adapter fusion |
+| `multimodal_collab` / `concat_collab` / `moe_collab` | Above fusions with SASRec collaborative embeddings |
+| `csga_collab` | CSGA: collaborative-graph-guided aggregation of multimodal neighbors |
+| `csga_moe_collab` | CSGA → OMoE fusion |
+| `csga_moe_collab_v2` | CSGA → OMoE-v2 fusion |
+
+### Run
+
 ```bash
-bash scripts/rec_zoo/train_sasrec.sh --data_dir data/Industrial_and_Scientific
+# Full pipeline, e.g. CSGA -> OMoE-v2 on Industrial_and_Scientific
+CATEGORY=Industrial_and_Scientific MODAL_CHOICE=csga_moe_collab_v2 bash main.sh
+
+# In the background with logs (nohup_logs/)
+bash nohup_run.sh run pipeline bash main.sh
+
+# Resume from stage 5 (skips data/embedding/RQ-VAE stages, validates artifacts)
+START_STAGE=5 CATEGORY=Industrial_and_Scientific MODAL_CHOICE=csga_moe_collab_v2 bash main.sh
+
+# Baselines (text-only, task1-only ablation)
+CATEGORY=Industrial_and_Scientific MODAL_CHOICE=text_only ONLY_TASK1=1 bash main.sh
 ```
 
-## Citation & acknowledgments
+### Manual stage-by-stage execution
 
-- [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) — SFT training framework  
-- [TRL](https://github.com/huggingface/trl) — Reinforcement learning training
-- [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) - First fully open-source generative recommendation framework
+The stages can also be run individually (see `main.sh` for exact commands):
+
+```bash
+# 1. Preprocess raw data -> item.json, *.inter, image list
+python data/possess_data.py --category Industrial_and_Scientific --output_path ./data/Amazon --raw_dir ./data --img_dir ./data/Industrial_and_Scientific_images
+
+# 2. (collab modes) Train SASRec and export collaborative item embeddings
+bash scripts/rec_zoo/train_sasrec.sh --data_dir data/Amazon/Industrial_and_Scientific
+
+# 3. Multimodal item embeddings (multi-GPU)
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 rq/text2emb/multimodal_amazon_text2emb.py \
+    --dataset Industrial_and_Scientific --root data/Amazon/Industrial_and_Scientific \
+    --plm_checkpoint /path/to/Qwen3-VL-8B-Instruct --plm_name Qwen3VL \
+    --mode csga_moe_collab_v2 --collab_emb_path sasrec_models/Industrial_and_Scientific/sasrec_item_emb.npy
+
+# 4-5. RQ-VAE + SID indices
+python rq/rqvae.py --data_path data/Amazon/Industrial_and_Scientific/Industrial_and_Scientific.emb-Qwen3VL-csga_moe_collab_v2.npy --ckpt_dir rq_output/Industrial_and_Scientific --num_emb_list 256 256 256 256
+python rq/generate_indices.py --dataset Industrial_and_Scientific --ckpt_path rq_output/Industrial_and_Scientific/best_collision_model.pth --output_dir data/Amazon/Industrial_and_Scientific
+
+# 6. SFT/RL datasets (4 SIDs per item)
+python preprocess_data_sft_rl.py --data_dir ./data/Amazon --category Industrial_and_Scientific --output_dir data/Industrial_and_Scientific --sid_num 4
+```
+
+## SFT, RL and evaluation
+
+```bash
+# SFT (LlamaFactory; edit sft.sh for GPUs / model size / DeepSpeed stage)
+bash sft.sh
+
+# RL (TRL GRPOTrainer; set MODEL_PATH / DATA_DIR / INDEX_PATH / OUTPUT_DIR in trl_trainer.sh)
+bash trl_trainer.sh
+
+# Evaluation (set exp_name / test_data_path / output_dir in evaluate.sh)
+bash evaluate.sh
+```
+
+Ready-made SFT configs for the new pipelines are in `examples/train_full/{Category}/new_industry_rec_full_sft_0.5b_*.yaml` (one per fusion mode / DeepSpeed stage / ablation).
+
+## Custom dataset (SFT/RL only)
+
+If you only need SFT/RL with your own data, first build SIDs for your items, then provide under `data/{Category}/`:
+
+```
+data/{Category}/
+├── new_tokens.json    # SID vocabulary (JSON array, e.g. ["<a_100>", "<b_230>", "<c_0>"])
+├── id2sid.json        # item_id -> [sid1, sid2, sid3]
+├── sft/{train,valid,test}.json
+└── rl/{train,valid,test}.json
+```
+
+Register the datasets in `data/dataset_info.json`, point `add_tokens_list` in your SFT YAML to `new_tokens.json`, then run `llamafactory-cli train your_config.yaml`. See the [MIMIGenRec README](https://github.com/cocoshe/MIMIGenRec) for the exact JSON schemas.
+
+## Baselines
+
+```bash
+bash scripts/rec_zoo/train_gru.sh   --data_dir data/{Category}
+bash scripts/rec_zoo/train_caser.sh --data_dir data/{Category}
+bash scripts/rec_zoo/train_sasrec.sh --data_dir data/{Category}
+```
+
+SASRec additionally exports `sasrec_item_emb.npy`, which is required by all `*_collab` fusion modes.
+
+## Acknowledgments
+
+- [MIMIGenRec](https://github.com/cocoshe/MIMIGenRec) — the base framework this repository is built upon
+- [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) — SFT training framework
+- [TRL](https://github.com/huggingface/trl) — reinforcement learning training
+- [MiniOneRec](https://github.com/AkaliKong/MiniOneRec) — first fully open-source generative recommendation framework
+
+## License
+
+Apache-2.0, same as the inherited MIMIGenRec codebase. See [LICENSE](LICENSE).
