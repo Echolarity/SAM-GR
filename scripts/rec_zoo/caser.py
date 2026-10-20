@@ -35,7 +35,7 @@ class Caser(nn.Module):
         pooled_outputs = []
         for cnn in self.horizontal_cnn:
             h_out = nn.functional.relu(cnn(input_emb))
-            h_out = h_out.squeeze()
+            h_out = h_out.squeeze(3)
             p_out = nn.functional.max_pool1d(h_out, h_out.shape[2])
             pooled_outputs.append(p_out)
         h_pool = torch.cat(pooled_outputs, 1)

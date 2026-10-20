@@ -171,10 +171,8 @@ def build_seq_samples(
         if dedup and history_sids and target_sid == history_sids[-1]:
             continue
         history_str = ", ".join(history_sids)
-        if not is_test:  # train dataset
-            input_text = f"The user has interacted with items {history_str} in chronological order. Can you predict the next possible item that the user may expect?"
-        else:  # test dataset
-            input_text = f"Can you predict the next possible item the user may expect, given the following chronological interaction history: {history_str}"
+        # A2: 统一 train/test 模板, 训练与推理使用完全相同的输入句式 (is_test 保留仅为兼容签名)
+        input_text = f"Can you predict the next possible item the user may expect, given the following chronological interaction history: {history_str}"
         samples.append(
             {
                 "system": SYSTEM_PROMPT,

@@ -61,9 +61,16 @@ start_job() {
 
   cd "$HERE"
   echo "启动 [$name] : $type $script $*"
-  echo "日志 -> $log"
+  echo "日志 -> $log (追加写入, 不覆盖历史)"
+  # 追加写入 + 每次运行的起始分隔, 避免历史日志被覆盖
+  {
+    echo ""
+    echo "=================================================================="
+    echo "[$(date '+%F %T')] START [$name] : $type $script $*"
+    echo "=================================================================="
+  } >> "$log"
   # setsid: 新建会话/进程组, 便于整棵树干净停止; nohup: 免疫挂断
-  setsid nohup "${runner[@]}" "$@" >"$log" 2>&1 &
+  setsid nohup "${runner[@]}" "$@" >>"$log" 2>&1 &
   echo $! > "$pidfile"
 
   # 记录参数以便 restart

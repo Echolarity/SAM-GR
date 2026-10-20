@@ -52,5 +52,23 @@
       "response": "output",
       "system": "system"
     }
+  },
+  "Books_train": {
+    "file_name": "Books/sft/train.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
+  },
+  "Books_valid": {
+    "file_name": "Books/sft/valid.json",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output",
+      "system": "system"
+    }
   }
 }

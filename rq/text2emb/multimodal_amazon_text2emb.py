@@ -33,6 +33,9 @@ from torch import nn
 from tqdm import tqdm
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
+from csga import csga_fuse
+from csga_omoe import csga_omoe_fuse
+from csga_omoe_v2 import csga_omoe_fuse_v2
 from moe_fusion import ContrastiveAdapter, MoEDecoupler
 from moe_plotter import plot_moe_training_curves
 
@@ -48,6 +51,9 @@ MODES = {
     "multimodal_collab",
     "concat_collab",
     "moe_collab",
+    "csga_collab",
+    "csga_moe_collab",
+    "csga_moe_collab_v2",
 }
 
 IMAGE2TEXT_PROMPT = (
@@ -310,6 +316,12 @@ def train_moe(x_t, x_i, x_c, args, collab_dim, mode):
     t = torch.from_numpy(x_t).float().to(device)
     i = torch.from_numpy(x_i).float().to(device)
     c = torch.from_numpy(x_c).float().to(device) if x_c is not None else None
+    # center each modality to remove its dominant shared component; without this the
+    # fused vectors collapse onto one direction (v1 bug: inter-item cosine ~0.9998)
+    t = t - t.mean(dim=0, keepdim=True)
+    i = i - i.mean(dim=0, keepdim=True)
+    if c is not None:
+        c = c - c.mean(dim=0, keepdim=True)
 
     n = t.shape[0]
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
@@ -353,8 +365,25 @@ def train_moe(x_t, x_i, x_c, args, collab_dim, mode):
     model.eval()
     with torch.no_grad():
         fused, _ = model(t, i, c if c is not None else None)
+    fused = fused.cpu().numpy().astype(np.float32)
+
+    # ---- degeneracy check: guard against a collapsed fused space (v1 failure) ----
+    sample = fused[: min(2000, len(fused))]
+    sn = sample / (np.linalg.norm(sample, axis=1, keepdims=True) + 1e-9)
+    off = sn @ sn.T
+    off = off[~np.eye(len(sn), dtype=bool)]
+    mean_cos = float(off.mean())
+    print(f"[MoE] fused sanity: std={sample.std():.4f} mean_inter_item_cos={mean_cos:.4f}")
+    if mean_cos > 0.99 or sample.std() < 1e-2:
+        print(
+            f"[MoE][WARN] fused embeddings degenerated (mean_cos={mean_cos:.4f}); "
+            f"falling back to raw concatenation."
+        )
+        parts = [t.cpu().numpy(), i.cpu().numpy()] + ([c.cpu().numpy()] if c is not None else [])
+        fused = np.concatenate(parts, axis=-1).astype(np.float32)
+
     plot_moe_training_curves(history, is_collab=(x_c is not None), mode=mode, save_dir=args.root)
-    return fused.cpu().numpy()
+    return fused
 
 
 def train_contrastive(x_t, x_i, args, mode):
@@ -430,6 +459,16 @@ def parse_args():
     p.add_argument("--text_weight", type=float, default=-1.0)
     p.add_argument("--combine_orig_text", action="store_true")
     p.add_argument("--moe_epochs", type=int, default=30)
+    p.add_argument("--csga_topk", type=int, default=10)
+    p.add_argument("--csga_epochs", type=int, default=60)
+    p.add_argument("--csga_lr", type=float, default=1e-3)
+    p.add_argument("--omoe_epochs", type=int, default=30)
+    p.add_argument("--omoe_lr", type=float, default=1e-3)
+    p.add_argument("--omoe_target_std", type=float, default=4.0)
+    p.add_argument("--omoe2_epochs", type=int, default=60)
+    p.add_argument("--omoe2_lr", type=float, default=1e-3)
+    p.add_argument("--omoe2_shared", type=int, default=2)
+    p.add_argument("--omoe2_residual", type=float, default=1.0)
     p.add_argument("--max_sent_len", type=int, default=1024)
     p.add_argument("--max_gen_tokens", type=int, default=150)
     p.add_argument("--batch_size", type=int, default=4)
@@ -473,8 +512,14 @@ def main():
     is_collab = "_collab" in mode
 
     # ---- 单模态 / 原生多模态 ----
-    if mode in ("text_only", "image_only", "multimodal", "multimodal_collab"):
-        kind = {"text_only": "text", "image_only": "image", "multimodal": "multimodal", "multimodal_collab": "multimodal"}[mode]
+    if mode in ("text_only", "image_only", "multimodal", "multimodal_collab", "csga_collab"):
+        kind = {
+            "text_only": "text",
+            "image_only": "image",
+            "multimodal": "multimodal",
+            "multimodal_collab": "multimodal",
+            "csga_collab": "multimodal",
+        }[mode]
         results = compute_embedding(args, item_data_list, processor, model, accelerator, kind)
         release_model(model)
         accelerator.wait_for_everyone()
@@ -483,6 +528,8 @@ def main():
             mat = _to_matrix(gathered, n_items)
             if mode == "multimodal_collab":
                 mat = np.concatenate([mat, collab_embeddings], axis=-1)
+            elif mode == "csga_collab":
+                mat = csga_fuse(mat, collab_embeddings, args)
             save_embeddings(args, mat)
 
     # ---- image2text ----
@@ -499,6 +546,26 @@ def main():
             for g in gathered_gen:
                 merged_gen.update(g)
             export_image2text_item_json(args, item_data_list, merged_gen)
+
+    # ---- CSGA -> OMoE (collaborative alignment + orthogonal MoE fusion) ----
+    elif mode in ("csga_moe_collab", "csga_moe_collab_v2"):
+        text_results = compute_embedding(args, item_data_list, processor, model, accelerator, "text")
+        image_results = compute_embedding(args, item_data_list, processor, model, accelerator, "image")
+        multi_results = compute_embedding(args, item_data_list, processor, model, accelerator, "multimodal")
+        release_model(model)
+        accelerator.wait_for_everyone()
+        gathered_text = gather_object(text_results)
+        gathered_image = gather_object(image_results)
+        gathered_multi = gather_object(multi_results)
+        if accelerator.is_main_process:
+            x_t = _to_matrix(gathered_text, n_items)
+            x_i = _to_matrix(gathered_image, n_items)
+            x_m = _to_matrix(gathered_multi, n_items)
+            if mode == "csga_moe_collab_v2":
+                mat = csga_omoe_fuse_v2(x_t, x_i, x_m, collab_embeddings, args)
+            else:
+                mat = csga_omoe_fuse(x_t, x_i, x_m, collab_embeddings, args)
+            save_embeddings(args, mat)
 
     # ---- concat / MoE / contrastive ----
     else:

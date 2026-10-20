@@ -15,18 +15,26 @@ import torch.nn.functional as F
 
 
 class MoEDecoupler(nn.Module):
-    """Mixture-of-Experts decoupled fusion.
+    """Mixture-of-Experts decoupled fusion (v2, collapse-safe).
 
-    Every modality is first aligned to a common `input_dim` space via
-    ``Linear -> LayerNorm``.  Then:
-      * one *unique* expert per modality (MLP on that modality alone),
-      * `num_shared_experts` *shared* experts (MLP on the concatenation),
-      * a gating network over the concatenation (last layer zero-initialised).
+    v1 collapsed: every fused item vector became nearly collinear (inter-item cosine
+    ~0.9998), which destroyed the downstream RQ-VAE (collision_rate ~0.9994).  The v2
+    design removes that failure mode:
+
+      * each aligned modality feature is L2-normalised, so no modality dominates by scale;
+      * a *residual identity path* ``out_proj(concat)`` is always added to the gated
+        expert mixture, so per-item information cannot be routed away;
+      * the objective reconstructs the (detached) concatenated features from ``fused``
+        (information-preserving) instead of regressing a detached mean, which in v1
+        merely reinforced the shared component;
+      * the orthogonal penalty was removed (text/image are naturally correlated, so
+        forcing orthogonality was unmotivated and harmful); load-balance is kept small.
 
     Returns ``(fused, total_loss)`` in training and ``(fused, None)`` in eval.
     """
 
-    def __init__(self, input_dim: int, num_shared_experts: int = 1, collab_dim: int | None = None):
+    def __init__(self, input_dim: int, num_shared_experts: int = 1, collab_dim: int | None = None,
+                 gate_hidden: int | None = None):
         super().__init__()
         self.input_dim = input_dim
         self.num_shared_experts = num_shared_experts
@@ -36,10 +44,13 @@ class MoEDecoupler(nn.Module):
         self.concat_dim = input_dim * self.num_modalities
 
         # per-modality alignment: Linear -> LayerNorm
-        self.align_text = nn.Sequential(nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim))
-        self.align_image = nn.Sequential(nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim))
+        def _align(in_dim: int) -> nn.Sequential:
+            return nn.Sequential(nn.Linear(in_dim, input_dim), nn.LayerNorm(input_dim))
+
+        self.align_text = _align(input_dim)
+        self.align_image = _align(input_dim)
         if collab_dim is not None:
-            self.align_collab = nn.Sequential(nn.Linear(collab_dim, input_dim), nn.LayerNorm(input_dim))
+            self.align_collab = _align(collab_dim)
 
         # unique experts (one per modality)
         self.expert_text = self._mlp(input_dim, input_dim)
@@ -52,14 +63,23 @@ class MoEDecoupler(nn.Module):
             [self._mlp(self.concat_dim, input_dim) for _ in range(num_shared_experts)]
         )
 
-        # gating network (last layer zero-initialised)
+        # gating network (last layer zero-initialised); modest hidden size to avoid
+        # the huge Linear(concat_dim, concat_dim//2) layer used in v1
+        gh = gate_hidden or max(128, self.concat_dim // 32)
         self.gate = nn.Sequential(
-            nn.Linear(self.concat_dim, self.concat_dim // 2),
+            nn.Linear(self.concat_dim, gh),
             nn.ReLU(),
-            nn.Linear(self.concat_dim // 2, self.num_experts),
+            nn.Linear(gh, self.num_experts),
         )
         self.temperature = 1.0
         self._zero_init_gate()
+
+        # residual identity path: guarantees item-specific information is preserved
+        self.out_proj = nn.Sequential(nn.Linear(self.concat_dim, input_dim), nn.LayerNorm(input_dim))
+        # information-preserving decoder: fuses -> concat
+        self.decoder = nn.Sequential(
+            nn.Linear(input_dim, input_dim), nn.GELU(), nn.Linear(input_dim, self.concat_dim)
+        )
 
     @staticmethod
     def _mlp(in_dim: int, out_dim: int) -> nn.Sequential:
@@ -74,7 +94,8 @@ class MoEDecoupler(nn.Module):
         feats = [self.align_text(e_t), self.align_image(e_i)]
         if e_c is not None:
             feats.append(self.align_collab(e_c))
-        return feats
+        # L2-normalise each modality so scale cannot dominate the fusion
+        return [F.normalize(f, dim=-1) for f in feats]
 
     def forward(self, e_t, e_i, e_c=None):
         feats = self._aligned_features(e_t, e_i, e_c)
@@ -89,39 +110,30 @@ class MoEDecoupler(nn.Module):
         logits = self.gate(concat) / self.temperature
         gates = F.softmax(logits, dim=-1)  # [B, num_experts]
 
-        fused = torch.zeros_like(expert_outputs[0])
+        moe = torch.zeros_like(expert_outputs[0])
         for k in range(self.num_experts):
-            fused = fused + gates[:, k].unsqueeze(-1) * expert_outputs[k]
+            moe = moe + gates[:, k].unsqueeze(-1) * expert_outputs[k]
+
+        # residual identity path (item-specific signal always flows through)
+        fused = self.out_proj(concat) + moe
 
         if not self.training:
             return fused, None
 
-        # reconstruction: SmoothL1 against the mean aligned feature
-        mean_feat = torch.stack(feats, dim=0).mean(dim=0).detach()
-        loss_rec = F.smooth_l1_loss(fused, mean_feat)
-
-        # orthogonal penalty on all modality pairs
-        pairs = [(0, 1)]
-        if e_c is not None:
-            pairs += [(0, 2), (1, 2)]
-        cos_sum = 0.0
-        for i, j in pairs:
-            cos_sum = cos_sum + F.cosine_similarity(feats[i], feats[j], dim=-1).abs().mean()
-        ortho_weight = 0.2
-        loss_ortho = ortho_weight * (cos_sum / len(pairs))
+        # information-preserving objective: fused must reconstruct the concat features
+        concat_hat = self.decoder(fused)
+        loss_rec = F.smooth_l1_loss(concat_hat, concat.detach())
 
         # load-balance: penalise gate collapse onto a single expert
         mean_gate = gates.mean(dim=0)  # [num_experts]
-        load_bal_weight = 0.5
-        loss_load = load_bal_weight * (self.num_experts * (mean_gate**2).sum())
+        loss_load = 0.1 * (self.num_experts * (mean_gate**2).sum())
 
-        total_loss = loss_rec + loss_ortho + loss_load
+        total_loss = loss_rec + loss_load
 
         # monitor attributes
         self._monitor_weights = mean_gate.detach().cpu().numpy()
         self._monitor_loss_rec_real = float(loss_rec.detach().cpu().item())
-        self._monitor_loss_ortho_real = float(loss_ortho.detach().cpu().item())
-        self._monitor_ortho_weight = ortho_weight
+        self._monitor_loss_ortho_real = 0.0
 
         return fused, total_loss
 

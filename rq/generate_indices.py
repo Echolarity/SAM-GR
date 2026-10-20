@@ -38,12 +38,72 @@ def get_collision_item(all_indices_str):
     return collision_item_groups
 
 
+def merge_collaborative_neighbors(all_indices, collab_emb_path, train_inter, merge_ratio):
+    """Intentionally merge a fraction of items into a more popular collaborative neighbour.
+
+    This creates *moderate* SID sharing so that popular items' codes are shared by
+    semantically/collaboratively close items, which lowers the generation difficulty
+    (fewer distinct targets) at a controlled cost of SID-level ambiguity.
+
+    Least-popular items are merged first, and only into a *more popular* canonical
+    neighbour, so hot items keep their own codes.
+    """
+    n = len(all_indices)
+    if merge_ratio <= 0 or not collab_emb_path or not os.path.exists(collab_emb_path):
+        return all_indices
+    emb = np.load(collab_emb_path).astype(np.float32)
+    if emb.shape[0] != n:
+        print(f"[merge] skip: collab rows {emb.shape[0]} != items {n}")
+        return all_indices
+    emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-9)
+
+    pop = np.zeros(n, dtype=np.float64)
+    if train_inter and os.path.exists(train_inter):
+        with open(train_inter, encoding="utf-8") as f:
+            next(f)
+            for line in f:
+                p = line.rstrip("\n").split("\t")
+                if len(p) == 3:
+                    pop[int(p[2])] += 1
+
+    top1 = np.empty(n, dtype=np.int64)
+    chunk = 2048
+    for st in range(0, n, chunk):
+        en = min(st + chunk, n)
+        sim = emb[st:en] @ emb.T
+        sim[np.arange(en - st), np.arange(st, en)] = -2.0
+        top1[st:en] = sim.argmax(axis=1)
+
+    budget = int(merge_ratio * n)
+    order = np.argsort(pop)  # least popular first
+    canonical = np.ones(n, dtype=bool)
+    merged = 0
+    for i in order:
+        if merged >= budget:
+            break
+        i = int(i)
+        j = int(top1[i])
+        if j == i or not canonical[j] or not canonical[i]:
+            continue
+        if pop[j] < pop[i]:
+            continue
+        all_indices[i] = list(all_indices[j])
+        canonical[i] = False
+        merged += 1
+    print(f"[merge] merged {merged}/{n} items ({merged / n:.4f}) into more popular collaborative neighbours")
+    return all_indices
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Generate RQ-VAE indices and save to id2sid-style JSON.")
     p.add_argument("--dataset", type=str, required=True, help="Dataset name (e.g. Industrial_and_Scientific)")
     p.add_argument("--ckpt_path", type=str, required=True, help="Path to best_collision_model.pth (or similar)")
     p.add_argument("--output_dir", type=str, default=None, help="Output directory; default: data/<dataset>/")
     p.add_argument("--device", type=str, default="cuda:0")
+    p.add_argument("--collab_emb_path", type=str, default="")
+    p.add_argument("--train_inter", type=str, default="")
+    p.add_argument("--merge_ratio", type=float, default=0.0,
+                   help="fraction of (least popular) items whose SID is merged into a more popular collaborative neighbour")
     return p.parse_args()
 
 
@@ -123,6 +183,13 @@ def main():
                 all_indices[item] = code
                 all_indices_str[item] = str(code)
         tt += 1
+
+    # moderate collaborative SID merging (after collision resolution)
+    if args.merge_ratio > 0:
+        all_indices = merge_collaborative_neighbors(
+            all_indices, args.collab_emb_path, args.train_inter, args.merge_ratio
+        )
+        all_indices_str = np.array([str(list(x)) for x in all_indices])
 
     print("All indices number:", len(all_indices))
     counts = get_indices_count(all_indices_str)

@@ -36,8 +36,7 @@ class SASRec(nn.Module):
         ff_out = self.ln_3(ff_out)
         indices = (len_states - 1).view(-1, 1, 1).repeat(1, 1, self.hidden_size)
         state_hidden = torch.gather(ff_out, 1, indices)
-        supervised_output = self.s_fc(state_hidden).squeeze()
-        return supervised_output
+        return self.s_fc(state_hidden).squeeze(1)
 
     def forward_eval(self, states, len_states):
         return self.forward(states, len_states)

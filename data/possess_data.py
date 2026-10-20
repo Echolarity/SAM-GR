@@ -125,8 +125,13 @@ def download_product_images(meta_data, save_dir):
 
 
 def _read_jsonl_lines(path, max_lines=None):
+    import gzip as _gzip
     lines = []
-    with open(path, "r", encoding="utf-8") as f:
+    if str(path).endswith(".gz"):
+        fh = _gzip.open(path, "rt", encoding="utf-8")
+    else:
+        fh = open(path, "r", encoding="utf-8")
+    with fh as f:
         if max_lines:
             for i, line in enumerate(f):
                 if i >= max_lines:
@@ -185,7 +190,9 @@ def load_reviews(reviews_file, sample_asins):
         return []
 
     reviews = []
-    with open(reviews_file, "r", encoding="utf-8") as f:
+    import gzip as _gzip
+    fh = _gzip.open(reviews_file, "rt", encoding="utf-8") if str(reviews_file).endswith(".gz") else open(reviews_file, "r", encoding="utf-8")
+    with fh as f:
         for line in tqdm(f, desc="Loading reviews"):
             r = json.loads(line.strip())
             asin = r.get("parent_asin") or r.get("asin")

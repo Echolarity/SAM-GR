@@ -35,6 +35,8 @@ def parse_args():
     p.add_argument("--num_filters", type=int, default=16)
     p.add_argument("--filter_sizes", type=str, default="[2,3,4]")
     p.add_argument("--early_stop", type=int, default=50)
+    p.add_argument("--num_heads", type=int, default=1)
+    p.add_argument("--num_blocks", type=int, default=1)
     p.add_argument("--eval_num", type=int, default=1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cuda", type=int, default=0)
@@ -211,7 +213,7 @@ def main():
     print(f"item_num={item_num} train={len(train_samples)} valid={len(valid_samples)} test={len(test_samples)}")
 
     if args.model == "SASRec":
-        model = SASRec(args.hidden_factor, item_num, seq_size, args.dropout_rate, device)
+        model = SASRec(args.hidden_factor, item_num, seq_size, args.dropout_rate, device, num_heads=args.num_heads)
     elif args.model == "GRU":
         model = GRU(args.hidden_factor, item_num, seq_size)
     else:

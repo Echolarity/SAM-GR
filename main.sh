@@ -17,21 +17,21 @@ set -euo pipefail
 # --------------------------------------------------------------------------- #
 # 顶部配置区
 # --------------------------------------------------------------------------- #
-export CATEGORY="Industrial_and_Scientific"
+export CATEGORY="${CATEGORY:-Industrial_and_Scientific}"
 export POSSESS_DATA_OUTPATH="./data/Amazon"
 export RAW_DATA_DIR="${RAW_DATA_DIR:-./data}"   # 原始 jsonl 数据目录 (与参考项目一致: 直接放 data/)
 export IMG_DIR="${IMG_DIR:-${RAW_DATA_DIR}/${CATEGORY}_images}"
 export CUDA_VISIBLE="${CUDA_VISIBLE:-0,1,2,3}"      # 多卡 (text2emb / SFT)
 export MONO_CUDA="${MONO_CUDA:-0}"                  # 单卡 (rqvae / generate_indices)
 
-export Optimization="${Optimization:-dsz3}"
+export Optimization="${Optimization:-dsz2}"
 export SFT_YAML="examples/train_full/${CATEGORY}/new_industry_rec_full_sft_0.5b_${Optimization}.yaml"
 export EVAL_EXP_NAME="newsaves/qwen2.5-0.5b/full/${CATEGORY}-sft-${Optimization}"
 
 # 核心模态控制器: multimodal, text_only, image_only, concat, image2text,
 #   image2text_supp, moe_decouple, contrastive_adapter,
 #   multimodal_collab, concat_collab, moe_collab
-export MODAL_CHOICE="${MODAL_CHOICE:-moe_collab}"
+export MODAL_CHOICE="${MODAL_CHOICE:-text_only}"
 
 export TEXT_WEIGHT="-1.0"         # >=0 时退化为加权均值/加权拼接
 export COMBINE_ORIG_TEXT="true"   # image2text 是否拼接原文
@@ -39,12 +39,16 @@ export MOE_EPOCHS=30
 export EMB_BATCH_SIZE="${EMB_BATCH_SIZE:-4}"
 
 export SASREC_EPOCHS=10000
-export SASREC_BATCH_SIZE=128
+export SASREC_BATCH_SIZE="${SASREC_BATCH_SIZE:-128}"
+export SASREC_HIDDEN="${SASREC_HIDDEN:-128}"
+export SASREC_SEQ="${SASREC_SEQ:-50}"
+export SASREC_LR="${SASREC_LR:-0.001}"
+export SASREC_EARLY_STOP="${SASREC_EARLY_STOP:-50}"
 export SASREC_SAVE_DIR="./sasrec_models/${CATEGORY}"
 
 export SAMPLE_SIZE="${SAMPLE_SIZE:--1}"   # -1 = 全量
-export USER_K="${USER_K:-2}"
-export ITEM_K="${ITEM_K:-2}"
+export USER_K="${USER_K:-5}"
+export ITEM_K="${ITEM_K:-5}"
 export TASK4_SAMPLE=-1
 export SEED=42
 
@@ -55,6 +59,12 @@ export OUTPUT_DIR="./data/${CATEGORY}"
 
 # ---- 断点续跑: 从第几个阶段开始 (1..7); 默认 1=从头 ----
 export START_STAGE="${START_STAGE:-1}"
+
+# ---- 阶段6 数据构建: 1=只生成 task1 (history->SID) 消融数据, 0=全部任务(默认) ----
+export ONLY_TASK1="${ONLY_TASK1:-0}"
+
+# ---- 阶段5 可控 SID 合并: 将比例 SID_MERGE_RATIO 的低频物品并入更热门的协同邻居 (0=关闭) ----
+export SID_MERGE_RATIO="${SID_MERGE_RATIO:-0}"
 
 # --------------------------------------------------------------------------- #
 # 颜色 / 计时 / 检查
@@ -137,6 +147,10 @@ main() {
                 --data_dir "${ROOT}" \
                 --epoch "${SASREC_EPOCHS}" \
                 --batch_size "${SASREC_BATCH_SIZE}" \
+                --hidden_factor "${SASREC_HIDDEN}" \
+                --seq_size "${SASREC_SEQ}" \
+                --lr "${SASREC_LR}" \
+                --early_stop "${SASREC_EARLY_STOP}" \
                 --save_dir "${SASREC_SAVE_DIR}"
             check_path "${SASREC_SAVE_DIR}/sasrec_item_emb.npy"
             step_end "阶段2"
@@ -208,11 +222,18 @@ main() {
     if should_run 5; then
         step_begin "阶段5 generate_indices"
         rm -f "${ROOT}"/*.index.json 2>/dev/null || true
+        local merge_args=()
+        if [ "${SID_MERGE_RATIO}" != "0" ] && [[ "$MODAL_CHOICE" == *collab* ]]; then
+            merge_args=(--collab_emb_path "${SASREC_SAVE_DIR}/sasrec_item_emb.npy" \
+                        --train_inter "${ROOT}/${CATEGORY}.train.inter" \
+                        --merge_ratio "${SID_MERGE_RATIO}")
+        fi
         CUDA_VISIBLE_DEVICES="${MONO_CUDA}" python rq/generate_indices.py \
             --dataset "${CATEGORY}" \
             --ckpt_path "${RQVAE_CKPT}" \
             --output_dir "${ROOT}" \
-            --device "cuda:0"
+            --device "cuda:0" \
+            "${merge_args[@]}"
         check_path "${INDEX_FILE}"
         step_end "阶段5"
     else
@@ -228,6 +249,8 @@ main() {
         GEN_ITEM_JSON="${ROOT}/${CATEGORY}.item-${MODAL_CHOICE}.json"
 
         run_preprocess() {
+            local extra=()
+            [ "${ONLY_TASK1}" = "1" ] && extra+=(--only_task1 True)
             python preprocess_data_sft_rl.py \
                 --data_dir "${POSSESS_DATA_OUTPATH}" \
                 --category "${CATEGORY}" \
@@ -235,7 +258,8 @@ main() {
                 --seq_sample "${TASK4_SAMPLE}" \
                 --seed "${SEED}" \
                 --data_source "${CATEGORY}" \
-                --sid_num 4
+                --sid_num 4 \
+                "${extra[@]}"
         }
 
         # image2text 数据调包/复原
